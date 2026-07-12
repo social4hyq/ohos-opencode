@@ -1,0 +1,141 @@
+name: OHOS Release
+
+# Fully cloud-built: no Homebrew formula, no self-hosted build runner. A
+# GitHub-hosted arm64 runner cross-builds the openharmony-arm64-musl target
+# (build.ts's --single target filter requires process.arch === item.arch, so
+# this must run on an arm64 host, not the default x64 ubuntu-latest),
+# embeds a prebuilt OHOS bun runtime downloaded from social4hyq/ohos-bun's
+# release, and self-signs the compiled binary with ohos-bst-light's
+# self-sign.py (the device-only binary-sign-tool/ohos-signpost don't run on
+# a stock cloud runner). Only the final smoke-test step needs a real OHOS
+# device, since the cloud runner can't execute an openharmony binary itself
+# — that step gates the GitHub Release.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ohos-release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUN_VERSION: "1.4.0"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+
+      - name: Use Node.js (for @parcel/watcher etc. native installs)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install driving bun (official, linux-arm64)
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Download OHOS bun runtime
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=$(gh release list --repo social4hyq/ohos-bun --limit 1 --json tagName -q '.[0].tagName')
+          if [ -z "$TAG" ]; then
+            echo "::error::No release found in social4hyq/ohos-bun — build and publish an OHOS bun runtime first."
+            exit 1
+          fi
+          echo "Using ohos-bun release: $TAG"
+          RUNTIME_PATH="packages/opencode/bun-linux-aarch64-musl-v${{ env.BUN_VERSION }}"
+          gh release download "$TAG" --repo social4hyq/ohos-bun --pattern 'bun' --output "$RUNTIME_PATH"
+          chmod +x "$RUNTIME_PATH"
+
+      - name: Remove workspace packages not needed for the CLI build
+        run: |
+          rm -rf packages/desktop packages/web packages/docs packages/storybook
+
+      - name: bun install
+        run: bun install --ignore-scripts
+
+      - name: Build Web UI (vite -> rolldown-vite)
+        run: bun run --cwd packages/app build
+
+      - name: Build OHOS target
+        working-directory: packages/opencode
+        env:
+          OHOS_CROSS_BUILD: "1"
+          SKIP_VITE_BUILD: "1"
+        run: bun run script/build.ts --single --skip-install
+
+      - name: Strip + self-sign binary
+        run: |
+          command -v objcopy >/dev/null || (sudo apt-get update && sudo apt-get install -y binutils)
+          OUT="packages/opencode/dist/opencode-openharmony-arm64-musl/bin/opencode"
+          test -f "$OUT"
+          # Idempotent: exits 0 whether or not a .codesign section is present.
+          # The official (non-OHOS-patched) driving bun's compile step doesn't
+          # auto-sign, but strip defensively in case a future driver does.
+          objcopy --remove-section .codesign "$OUT" "$OUT.stripped"
+          python3 scripts/ohos/self-sign.py "$OUT.stripped" "$OUT"
+          rm -f "$OUT.stripped"
+          chmod +x "$OUT"
+          cp "$OUT" ./opencode-openharmony-arm64
+          file ./opencode-openharmony-arm64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opencode-openharmony-arm64
+          path: opencode-openharmony-arm64
+          retention-days: 14
+
+      - name: Capture version
+        id: version
+        run: |
+          VERSION=$(grep -m1 '"version"' packages/opencode/package.json | sed -E 's/.*"version": *"([^"]+)".*/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  smoke-test:
+    needs: build
+    runs-on: self-hosted
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: opencode-openharmony-arm64
+
+      - name: Real-device smoke test
+        run: |
+          chmod +x ./opencode-openharmony-arm64
+          VERSION_OUTPUT=$(./opencode-openharmony-arm64 --version 2>&1)
+          echo "opencode --version: $VERSION_OUTPUT"
+          echo "$VERSION_OUTPUT" | grep -qE '[0-9]+\.[0-9]+\.[0-9]+' || {
+            echo "::error::Smoke test failed — no version string in output"
+            exit 1
+          }
+
+  release:
+    needs: [build, smoke-test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: opencode-openharmony-arm64
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x ./opencode-openharmony-arm64
+          TAG="ohos-aarch64-v${{ needs.build.outputs.version }}-r${{ github.run_number }}"
+          gh release create "$TAG" ./opencode-openharmony-arm64 \
+            --repo social4hyq/ohos-opencode \
+            --title "$TAG" \
+            --notes "Automated OHOS release — cloud-built (ubuntu-24.04-arm), smoke-tested on real device."
