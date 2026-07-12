@@ -36,6 +36,11 @@ const sourcemapsFlag = process.argv.includes("--sourcemaps")
 const plugin = createSolidTransformPlugin()
 const skipEmbedWebUi = process.argv.includes("--skip-embed-web-ui")
 const isOhosNative = (process.platform === "linux" || process.platform === "openharmony") && fs.existsSync("/system/bin/sh")
+// Cloud CI cross-builds the openharmony-arm64-musl target from a stock arm64
+// ubuntu runner, where /system/bin/sh doesn't exist. Decouple target
+// selection from on-device detection via an explicit opt-in env var so the
+// --single target filter below still picks the OHOS target off-device.
+const isOhosTarget = isOhosNative || process.env.OHOS_CROSS_BUILD === "1"
 
 const createEmbeddedWebUIBundle = async () => {
   console.log(`Building Web UI to embed in the binary`)
@@ -149,11 +154,11 @@ const targets = singleFlag
       }
 
       // On OHOS, prefer the ohos target, skip generic linux arm64
-      if (isOhosNative && item.os === "linux" && item.abi === undefined) {
+      if (isOhosTarget && item.os === "linux" && item.abi === undefined) {
         return false
       }
       // Skip musl abi unless building the openharmony target on OHOS
-      if (item.abi === "musl" && !(isOhosNative && item.os === "openharmony")) {
+      if (item.abi === "musl" && !(isOhosTarget && item.os === "openharmony")) {
         return false
       }
 
