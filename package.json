@@ -136,7 +136,7 @@
     "electron"
   ],
   "overrides": {
-    "@opentui/core": "npm:@ohos-ports/opentui-core@0.4.3",
+    "@opentui/core": "npm:@ohos-ports/opentui-core@0.4.4",
     "@opentui/keymap": "catalog:",
     "@opentui/solid": "catalog:",
     "@types/bun": "catalog:",

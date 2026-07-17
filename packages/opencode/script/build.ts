@@ -42,6 +42,23 @@ const isOhosNative = (process.platform === "linux" || process.platform === "open
 // --single target filter below still picks the OHOS target off-device.
 const isOhosTarget = isOhosNative || process.env.OHOS_CROSS_BUILD === "1"
 
+// OHOS native build: materialize the compile runtime from the running bun.
+// Bun.build embeds a local runtime named bun-<os>-<arch>-<abi>-v<version>
+// from the package dir if present, otherwise downloads the official release —
+// which lacks the OHOS patches (openharmony platform, in-process ELF signing).
+// process.execPath is the real ELF even when bun was launched via a wrapper
+// script. Cross builds (OHOS_CROSS_BUILD=1) must place the file themselves.
+if (isOhosNative) {
+  const runtimeFile = path.join(import.meta.dirname, "..", `bun-linux-aarch64-musl-v${Bun.version}`)
+  if (!fs.existsSync(runtimeFile)) {
+    try {
+      fs.symlinkSync(process.execPath, runtimeFile)
+    } catch {
+      fs.copyFileSync(process.execPath, runtimeFile)
+    }
+  }
+}
+
 const createEmbeddedWebUIBundle = async () => {
   console.log(`Building Web UI to embed in the binary`)
   const appDir = path.join(import.meta.dirname, "../../app")

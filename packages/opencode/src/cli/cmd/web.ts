@@ -72,13 +72,13 @@ export const WebCommand = effectCmd({
       }
 
       // Open localhost in browser
-      if (process.env.DISPLAY || process.env.WAYLAND_DISPLAY || process.platform !== "linux") {
+      if (process.env.DISPLAY || process.env.WAYLAND_DISPLAY || (process.platform !== "linux" && process.platform !== "openharmony")) {
         open(localhostUrl).catch(() => {})
       }
     } else {
       const displayUrl = server.url.toString()
       UI.println(UI.Style.TEXT_INFO_BOLD + "  Web interface:    ", UI.Style.TEXT_NORMAL, displayUrl)
-      if (process.env.DISPLAY || process.env.WAYLAND_DISPLAY || process.platform !== "linux") {
+      if (process.env.DISPLAY || process.env.WAYLAND_DISPLAY || (process.platform !== "linux" && process.platform !== "openharmony")) {
         open(displayUrl).catch(() => {})
       }
     }
