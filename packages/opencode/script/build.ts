@@ -1,18 +1,6 @@
 #!/usr/bin/env bun
 
-import { $ as bunDollar } from "bun"
-// OHOS: Bun.$ tagged template literal segfaults on our self-bootstrapped Bun build.
-// Use sh -c fallback via Bun.spawnSync.
-const isOhosShell = (process.platform === "linux" || process.platform === "openharmony") &&
-  require("fs").existsSync("/system/bin/sh")
-const $: any = isOhosShell
-  ? (strings: TemplateStringsArray, ...values: any[]) => {
-      const cmd = strings.reduce((acc, s, i) => acc + s + (i < values.length ? String(values[i]) : ""), "")
-      const proc = Bun.spawnSync(["sh", "-c", cmd], { stdout: "inherit", stderr: "inherit", stdin: "inherit" })
-      if (proc.exitCode !== 0) throw new Error(`Command failed (exit ${proc.exitCode}): ${cmd}`)
-      return Promise.resolve(proc)
-    }
-  : bunDollar
+import { $ } from "bun"
 import fs from "fs"
 import path from "path"
 import { fileURLToPath } from "url"
@@ -35,20 +23,13 @@ const skipInstall = process.argv.includes("--skip-install")
 const sourcemapsFlag = process.argv.includes("--sourcemaps")
 const plugin = createSolidTransformPlugin()
 const skipEmbedWebUi = process.argv.includes("--skip-embed-web-ui")
-const isOhosNative = (process.platform === "linux" || process.platform === "openharmony") && fs.existsSync("/system/bin/sh")
-// Cloud CI cross-builds the openharmony-arm64-musl target from a stock arm64
-// ubuntu runner, where /system/bin/sh doesn't exist. Decouple target
-// selection from on-device detection via an explicit opt-in env var so the
-// --single target filter below still picks the OHOS target off-device.
-const isOhosTarget = isOhosNative || process.env.OHOS_CROSS_BUILD === "1"
-
 // OHOS native build: materialize the compile runtime from the running bun.
 // Bun.build embeds a local runtime named bun-<os>-<arch>-<abi>-v<version>
 // from the package dir if present, otherwise downloads the official release —
 // which lacks the OHOS patches (openharmony platform, in-process ELF signing).
 // process.execPath is the real ELF even when bun was launched via a wrapper
-// script. Cross builds (OHOS_CROSS_BUILD=1) must place the file themselves.
-if (isOhosNative) {
+// script.
+if (process.platform === "openharmony") {
   const runtimeFile = path.join(import.meta.dirname, "..", `bun-linux-aarch64-musl-v${Bun.version}`)
   if (!fs.existsSync(runtimeFile)) {
     try {
@@ -63,9 +44,7 @@ const createEmbeddedWebUIBundle = async () => {
   console.log(`Building Web UI to embed in the binary`)
   const appDir = path.join(import.meta.dirname, "../../app")
   const dist = path.join(appDir, "dist")
-  if (!process.env.SKIP_VITE_BUILD) {
-    await $`OPENCODE_CHANNEL=${Script.channel} bun run --cwd ${appDir} build`
-  }
+  await $`OPENCODE_CHANNEL=${Script.channel} bun run --cwd ${appDir} build`
   const files = (await Array.fromAsync(new Bun.Glob("**/*").scan({ cwd: dist })))
     .map((file) => file.replaceAll("\\", "/"))
     .filter((file) => !file.endsWith(".map"))
@@ -90,7 +69,7 @@ const embeddedFileMap = skipEmbedWebUi ? null : await createEmbeddedWebUIBundle(
 const allTargets: {
   os: string
   arch: "arm64" | "x64"
-  abi?: "musl" | "ohos"
+  abi?: "musl"
   avx2?: false
 }[] = [
   {
@@ -157,10 +136,7 @@ const allTargets: {
 
 const targets = singleFlag
   ? allTargets.filter((item) => {
-      const osMatch = item.os === process.platform
-        // OHOS reports as linux; also match openharmony targets
-        || (item.os === "openharmony" && process.platform === "linux");
-      if (!osMatch || item.arch !== process.arch) {
+      if (item.os !== process.platform || item.arch !== process.arch) {
         return false
       }
 
@@ -170,12 +146,12 @@ const targets = singleFlag
         return baselineFlag
       }
 
-      // On OHOS, prefer the ohos target, skip generic linux arm64
-      if (isOhosTarget && item.os === "linux" && item.abi === undefined) {
+      // On OHOS, prefer the openharmony target, skip generic linux arm64
+      if (process.platform === "openharmony" && item.os === "linux" && item.abi === undefined) {
         return false
       }
       // Skip musl abi unless building the openharmony target on OHOS
-      if (item.abi === "musl" && !(isOhosTarget && item.os === "openharmony")) {
+      if (item.abi === "musl" && !(process.platform === "openharmony" && item.os === "openharmony")) {
         return false
       }
 
@@ -249,9 +225,7 @@ for (const item of targets) {
   })
 
   // Smoke test: only run if binary is for current platform
-  const isCurrentPlatform = item.os === process.platform
-    || (item.os === "openharmony" && process.platform === "linux");
-  if (isCurrentPlatform && item.arch === process.arch && item.abi !== "musl") {
+  if (item.os === process.platform && item.arch === process.arch && item.abi !== "musl") {
     const binaryPath = `dist/${name}/bin/opencode`
     console.log(`Running smoke test: ${binaryPath} --version`)
     try {
