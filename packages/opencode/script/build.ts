@@ -23,22 +23,6 @@ const skipInstall = process.argv.includes("--skip-install")
 const sourcemapsFlag = process.argv.includes("--sourcemaps")
 const plugin = createSolidTransformPlugin()
 const skipEmbedWebUi = process.argv.includes("--skip-embed-web-ui")
-// OHOS native build: materialize the compile runtime from the running bun.
-// Bun.build embeds a local runtime named bun-<os>-<arch>-<abi>-v<version>
-// from the package dir if present, otherwise downloads the official release —
-// which lacks the OHOS patches (openharmony platform, in-process ELF signing).
-// process.execPath is the real ELF even when bun was launched via a wrapper
-// script.
-if (process.platform === "openharmony") {
-  const runtimeFile = path.join(import.meta.dirname, "..", `bun-linux-aarch64-musl-v${Bun.version}`)
-  if (!fs.existsSync(runtimeFile)) {
-    try {
-      fs.symlinkSync(process.execPath, runtimeFile)
-    } catch {
-      fs.copyFileSync(process.execPath, runtimeFile)
-    }
-  }
-}
 
 const createEmbeddedWebUIBundle = async () => {
   console.log(`Building Web UI to embed in the binary`)
@@ -204,8 +188,11 @@ for (const item of targets) {
       autoloadDotenv: false,
       autoloadTsconfig: true,
       autoloadPackageJson: true,
-      // Map openharmony → linux for bun compile target (bun uses Libc::Ohos, not OS name)
-      target: name.replace(pkg.name, "bun").replace("-openharmony-", "-linux-") as any,
+      // OHOS bun has Libc::Ohos as a distinct musl-based compile target
+      // (bun-linux-arm64-ohos), baking process.platform="openharmony" and
+      // equal to CompileTarget::default() on-device — bun embeds the running
+      // OHOS runtime directly, no local runtime file or download needed.
+      target: (item.os === "openharmony" ? "bun-linux-arm64-ohos" : name.replace(pkg.name, "bun")) as any,
       outfile: `dist/${name}/bin/opencode`,
       execArgv: [`--user-agent=opencode/${Script.version}`, "--use-system-ca", "--"],
       windows: {},
@@ -225,7 +212,7 @@ for (const item of targets) {
   })
 
   // Smoke test: only run if binary is for current platform
-  if (item.os === process.platform && item.arch === process.arch && item.abi !== "musl") {
+  if (item.os === process.platform && item.arch === process.arch && !item.abi) {
     const binaryPath = `dist/${name}/bin/opencode`
     console.log(`Running smoke test: ${binaryPath} --version`)
     try {
